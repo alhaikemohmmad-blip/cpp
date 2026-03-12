@@ -1,21 +1,20 @@
 #include <iostream>
+#include <cmath>
 using namespace std;
-float areatringle(float a, float b)
+float circle(double d)
 {
-    float Area;
+    double area;
 
-    Area = 0.5 * a * b;
+    area = (3.14 * pow(d, 2)) / 4;
 
-    return Area;
+    return area;
 }
 int main()
 {
 
-    float x;
-    float y;
-    cin >> x;
-    cin >> y;
-    cout << areatringle(x, y) << endl;
+    double a;
+    cin >> a;
+    cout << circle(a) << endl;
 
     system("pause");
 
