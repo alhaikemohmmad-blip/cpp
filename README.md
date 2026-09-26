@@ -9,7 +9,7 @@ Every stage ends with a small, real project.
 | # | Topic | Project | Status |
 |---|---|---|---|
 | 00 | First programs | Circle and triangle area | ✅ |
-| 01 | `iostream` and input validation | PIN lock with an attempt limit | 🔨 |
+| 01 | `iostream` and input validation | [PIN lock with an attempt limit](01-iostream/pin-lock) | ✅ |
 | 02 | `std::string` | Password strength checker | ⏳ |
 | 03 | Functions and references | Calculator split into functions | ⏳ |
 | 04 | `std::vector` | Temperature sensor logger | ⏳ |
