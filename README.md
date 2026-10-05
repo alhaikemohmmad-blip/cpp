@@ -23,7 +23,7 @@ Automotive and safety standards (MISRA C++, AUTOSAR C++14) ban or tightly restri
 |---|---|---|---|
 | 00 | First programs | Circle and triangle area | ✅ |
 | 01 | `iostream` and input validation | [PIN lock with an attempt limit](01-iostream/pin-lock) | ✅ |
-| 02 | C strings: `char[]`, `'\0'`, buffer overflow | PIN lock v2, embedded style, no heap | 🔨 |
+| 02 | C strings: `char[]`, `'\0'`, buffer overflow | PIN lock v2, embedded style, no heap · [Hospital patient card](02-char/hospital) | 🔨 |
 | 03 | Fixed-width types and bit manipulation | Register simulator: LEDs through bit masks | ⏳ |
 | 04 | Functions, references, `const`, `constexpr` | Compile-time sensor conversions | ⏳ |
 | 05 | Arrays, `std::array`, ring buffer | Sensor ring buffer without heap | ⏳ |
