@@ -14,6 +14,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <winspool.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <cmath>
@@ -97,15 +98,18 @@ wstring g_dir, g_ini, g_dataFile, g_xlsx;
 Layout g_lay;
 wstring g_printer;
 int g_dpi = 96;
-HFONT g_uiFont, g_uiBold;
+HFONT g_uiFont;
 HBITMAP g_formBmp;
 
-HWND g_main, g_status, g_printerLbl, g_waybillNo, g_fontSize, g_copies;
+HWND g_main, g_waybillNo, g_fontSize, g_copies;
+wstring g_statusText;
+int g_statusKind;  // 0 info, 1 success, 2 error
 HWND g_edit[NF];
 HWND g_editor;
 
 enum {
     IDC_PRINT = 100, IDC_EDITOR, IDC_TEST, IDC_CLEAR, IDC_PRINTER, IDC_EXCEL,
+    IDC_FONT_DEC, IDC_FONT_INC, IDC_COPY_DEC, IDC_COPY_INC,
     IDC_EDIT_BASE = 200,
     IDC_WAYBILL = 300, IDC_FONTSIZE, IDC_COPIES,
     IDC_ED_SAVE = 400, IDC_ED_CANCEL, IDC_ED_TEST, IDC_ED_RESET, IDC_ED_APPLY, IDC_ED_ROTATE
@@ -786,14 +790,158 @@ bool BuildXlsx() {
 }
 
 // ---------------------------------------------------------------------------
+// Look and feel: colors, fonts, rounded shapes and owner-drawn buttons
+// ---------------------------------------------------------------------------
+
+namespace Theme {
+const COLORREF Purple = RGB(94, 45, 134), PurpleLight = RGB(128, 70, 176), PurpleDark = RGB(70, 30, 102);
+const COLORREF Orange = RGB(247, 165, 65);
+const COLORREF Bg = RGB(244, 242, 248), Card = RGB(255, 255, 255), CardBorder = RGB(228, 223, 236);
+const COLORREF Text = RGB(40, 32, 58), Muted = RGB(112, 104, 132), HeaderSub = RGB(226, 214, 240);
+const COLORREF InputBorder = RGB(214, 208, 226), Tint = RGB(243, 237, 250), TintHover = RGB(228, 218, 242);
+const COLORREF StatusBg = RGB(234, 230, 242), Good = RGB(28, 140, 84), Bad = RGB(200, 50, 50);
+}
+
+HFONT g_fTitle, g_fSub, g_fCard, g_fLabel, g_fInput, g_fButton, g_fSmall, g_fBig;
+HBRUSH g_bgBrush;
+HWND g_hover;
+
+HFONT MakeFont(double pt, bool bold) {
+    return CreateFontW(-MulDiv((int)lround(pt * 10), g_dpi, 720), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                       L"Segoe UI");
+}
+
+Gdiplus::Color GC(COLORREF c, BYTE a = 255) { return Gdiplus::Color(a, GetRValue(c), GetGValue(c), GetBValue(c)); }
+
+void RoundPath(Gdiplus::GraphicsPath& p, const RECT& r, float rad) {
+    float x = (float)r.left, y = (float)r.top, w = (float)(r.right - r.left) - 1, h = (float)(r.bottom - r.top) - 1;
+    float d = std::min(rad * 2, std::min(w, h));
+    p.AddArc(x, y, d, d, 180, 90);
+    p.AddArc(x + w - d, y, d, d, 270, 90);
+    p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+    p.AddArc(x, y + h - d, d, d, 90, 90);
+    p.CloseFigure();
+}
+
+void FillRound(Gdiplus::Graphics& g, const RECT& r, float rad, COLORREF fill, BYTE alpha = 255) {
+    Gdiplus::GraphicsPath p;
+    RoundPath(p, r, rad);
+    Gdiplus::SolidBrush b(GC(fill, alpha));
+    g.FillPath(&b, &p);
+}
+
+void StrokeRound(Gdiplus::Graphics& g, const RECT& r, float rad, COLORREF color, float width, BYTE alpha = 255) {
+    Gdiplus::GraphicsPath p;
+    RoundPath(p, r, rad);
+    Gdiplus::Pen pen(GC(color, alpha), width);
+    g.DrawPath(&pen, &p);
+}
+
+void PaintText(HDC dc, const wstring& t, RECT r, HFONT f, COLORREF c,
+               UINT fmt = DT_RIGHT | DT_VCENTER | DT_SINGLELINE) {
+    HGDIOBJ old = SelectObject(dc, f);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, c);
+    DrawTextW(dc, t.c_str(), -1, &r, fmt | DT_NOPREFIX | DT_RTLREADING);
+    SelectObject(dc, old);
+}
+
+enum BtnKind { BTN_PRIMARY, BTN_SECONDARY, BTN_SMALL };
+
+// Buttons repaint on hover; the parent draws them in WM_DRAWITEM.
+LRESULT CALLBACK ButtonHover(HWND h, UINT m, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (m == WM_MOUSEMOVE && g_hover != h) {
+        if (g_hover) InvalidateRect(g_hover, nullptr, FALSE);
+        g_hover = h;
+        InvalidateRect(h, nullptr, FALSE);
+        TRACKMOUSEEVENT t = {sizeof(t), TME_LEAVE, h, 0};
+        TrackMouseEvent(&t);
+    } else if (m == WM_MOUSELEAVE && g_hover == h) {
+        g_hover = nullptr;
+        InvalidateRect(h, nullptr, FALSE);
+    } else if (m == WM_ERASEBKGND) {
+        return 1;
+    }
+    return DefSubclassProc(h, m, wp, lp);
+}
+
+HWND MakeButton(HWND parent, const wchar_t* text, int id, BtnKind kind, COLORREF behind) {
+    HWND b = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                             parent, (HMENU)(INT_PTR)id, g_inst, nullptr);
+    SetWindowLongPtrW(b, GWLP_USERDATA, (LONG_PTR)kind | ((LONG_PTR)behind << 8));
+    SetWindowSubclass(b, ButtonHover, 1, 0);
+    return b;
+}
+
+void DrawButton(const DRAWITEMSTRUCT* d) {
+    LONG_PTR data = GetWindowLongPtrW(d->hwndItem, GWLP_USERDATA);
+    BtnKind kind = (BtnKind)(data & 0xFF);
+    COLORREF behind = (COLORREF)(data >> 8);
+    bool hover = d->hwndItem == g_hover, down = d->itemState & ODS_SELECTED;
+    RECT rc = d->rcItem;
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+
+    HDC mem = CreateCompatibleDC(d->hDC);
+    HBITMAP bmp = CreateCompatibleBitmap(d->hDC, w, h);
+    HGDIOBJ ob = SelectObject(mem, bmp);
+    RECT r = {0, 0, w, h};
+    HBRUSH bb = CreateSolidBrush(behind);
+    FillRect(mem, &r, bb);
+    DeleteObject(bb);
+
+    COLORREF textColor;
+    {
+        Gdiplus::Graphics g(mem);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        float rad = (float)S(kind == BTN_SMALL ? 8 : 10);
+        if (kind == BTN_PRIMARY) {
+            COLORREF top = down ? Theme::PurpleDark : hover ? Theme::PurpleLight : Theme::Purple;
+            COLORREF bottom = down ? Theme::PurpleDark : Theme::Purple;
+            if (!down) {  // soft shadow
+                RECT sh = {0, S(2), w, h};
+                FillRound(g, sh, rad, Theme::PurpleDark, 60);
+            }
+            RECT body = {0, 0, w, h - (down ? 0 : S(2))};
+            Gdiplus::GraphicsPath p;
+            RoundPath(p, body, rad);
+            Gdiplus::LinearGradientBrush lg(Gdiplus::Point(0, 0), Gdiplus::Point(0, h), GC(top), GC(bottom));
+            g.FillPath(&lg, &p);
+            textColor = RGB(255, 255, 255);
+        } else if (kind == BTN_SECONDARY) {
+            FillRound(g, r, rad, down ? Theme::TintHover : hover ? Theme::Tint : Theme::Card);
+            RECT br = {1, 1, w - 1, h - 1};
+            StrokeRound(g, br, rad, hover ? Theme::Purple : Theme::InputBorder, hover ? 1.6f : 1.2f);
+            textColor = Theme::Purple;
+        } else {
+            FillRound(g, r, rad, down ? Theme::TintHover : hover ? Theme::TintHover : Theme::Tint);
+            textColor = Theme::Purple;
+        }
+    }
+    wchar_t text[128];
+    GetWindowTextW(d->hwndItem, text, 128);
+    RECT tr = r;
+    if (kind == BTN_PRIMARY && !down) tr.bottom -= S(2);
+    PaintText(mem, text, tr, kind == BTN_SMALL && wcslen(text) == 1 ? g_fBig : g_fButton, textColor,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    BitBlt(d->hDC, rc.left, rc.top, w, h, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, ob);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
+// ---------------------------------------------------------------------------
 // Main window helpers
 // ---------------------------------------------------------------------------
 
-void SetStatus(const wstring& s) { SetWindowTextW(g_status, s.c_str()); }
+void SetStatus(const wstring& s, int kind = 0) {
+    g_statusText = s;
+    g_statusKind = kind;
+    if (g_main) InvalidateRect(g_main, nullptr, FALSE);
+}
 
 void UpdatePrinterLabel() {
-    wstring p = CurrentPrinter();
-    SetWindowTextW(g_printerLbl, (L"الطابعة: " + (p.empty() ? wstring(L"(غير محددة)") : p)).c_str());
+    if (g_main) InvalidateRect(g_main, nullptr, FALSE);
 }
 
 wstring Today() {
@@ -863,7 +1011,7 @@ void DoPrint() {
     wstring err;
     SetStatus(L"جاري الطباعة...");
     if (!PrintPages(g_lay, texts, copies, false, err)) {
-        SetStatus(err);
+        SetStatus(err, 2);
         Msg(g_main, err, MB_ICONERROR);
         return;
     }
@@ -897,7 +1045,7 @@ void DoPrint() {
     if (!waybill.empty()) msg += L" (بوليصة رقم " + waybill + L")";
     msg += L" — عدد النسخ: " + std::to_wstring(copies);
     msg += xl ? L" — وانحفظت بسجل الإكسل." : L" — انحفظت بالسجل، بس ملف الإكسل مفتوح: سكّره وبيتحدث مع الطباعة الجاية.";
-    SetStatus(msg);
+    SetStatus(msg, xl ? 1 : 0);
 }
 
 void DoTestPage(const Layout& lay, HWND owner) {
@@ -905,7 +1053,7 @@ void DoTestPage(const Layout& lay, HWND owner) {
     ReadTexts(texts);
     wstring err;
     if (PrintPages(lay, texts, 1, true, err))
-        SetStatus(L"انطبعت صفحة التجربة: قارن المربعات المطبوعة مع مربعات البوليصة.");
+        SetStatus(L"انطبعت صفحة التجربة: قارن المربعات المطبوعة مع مربعات البوليصة.", 1);
     else
         Msg(owner, err, MB_ICONERROR);
 }
@@ -955,7 +1103,7 @@ struct Editor {
     HWND status, save, cancel, test, reset, lblW, editW, lblH, editH, apply, lblRot, rot;
 } ed;
 
-const int kPanel = 96;
+const int kPanel = 100;
 
 double Round05(double v) { return std::round(v * 2) / 2; }
 
@@ -991,17 +1139,23 @@ void EdLayout(HWND h) {
     GetClientRect(h, &rc);
     int cw = rc.right, top = rc.bottom - S(kPanel);
     MoveWindow(ed.status, S(10), top + S(6), cw - S(20), S(40), TRUE);
-    int x = cw - S(10), y = top + S(54);
-    auto place = [&](HWND w, int width, int height = 28) {
+    int x = cw - S(10), y = top + S(52);
+    auto place = [&](HWND w, int width, int height = 34) {
         x -= S(width);
         MoveWindow(w, x, y, S(width), S(height), TRUE);
         x -= S(6);
     };
     place(ed.save, 90); place(ed.cancel, 80); place(ed.test, 110); place(ed.reset, 125);
     x -= S(16);
-    place(ed.lblW, 115); place(ed.editW, 50); place(ed.lblH, 85); place(ed.editH, 50); place(ed.apply, 65);
+    place(ed.lblW, 115);
+    x -= S(50); MoveWindow(ed.editW, x, y + S(5), S(50), S(24), TRUE); x -= S(6);
+    place(ed.lblH, 85);
+    x -= S(50); MoveWindow(ed.editH, x, y + S(5), S(50), S(24), TRUE); x -= S(6);
+    place(ed.apply, 65);
     x -= S(16);
-    place(ed.lblRot, 110); place(ed.rot, 190, 200);
+    place(ed.lblRot, 110);
+    x -= S(190);
+    MoveWindow(ed.rot, x, y + S(4), S(190), S(200), TRUE);
 }
 
 void EdComputeScale(HWND h) {
@@ -1026,7 +1180,7 @@ void EdPaint(HWND h) {
         HBITMAP bmp = CreateCompatibleBitmap(dc, cw, ch);
         HGDIOBJ oldBmp = SelectObject(mem, bmp);
         RECT canvas = {0, 0, cw, ch};
-        HBRUSH bg = CreateSolidBrush(RGB(70, 72, 82));
+        HBRUSH bg = CreateSolidBrush(RGB(62, 52, 80));
         FillRect(mem, &canvas, bg);
         DeleteObject(bg);
 
@@ -1072,7 +1226,7 @@ void EdPaint(HWND h) {
         DeleteDC(mem);
     }
     RECT panel = {0, ch, cw, rc.bottom};
-    FillRect(dc, &panel, GetSysColorBrush(COLOR_BTNFACE));
+    FillRect(dc, &panel, g_bgBrush);
     EndPaint(h, &ps);
 }
 
@@ -1101,7 +1255,7 @@ bool EdSave() {
     g_lay.fontPt = ReadInt(g_fontSize, g_lay.fontPt, 6, 24);
     SaveLayout(g_lay);
     ed.dirty = false;
-    SetStatus(L"انحفظت مواقع الخانات.");
+    SetStatus(L"انحفظت مواقع الخانات.", 1);
     return true;
 }
 
@@ -1111,19 +1265,19 @@ LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         auto mk = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id, DWORD ex = 0) {
             HWND w = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, h,
                                      (HMENU)(INT_PTR)id, g_inst, nullptr);
-            SendMessageW(w, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
+            SendMessageW(w, WM_SETFONT, (WPARAM)g_fLabel, TRUE);
             return w;
         };
         ed.status = mk(L"STATIC", L"", SS_RIGHT, 0, WS_EX_RTLREADING);
-        ed.save = mk(L"BUTTON", L"حفظ", BS_DEFPUSHBUTTON, IDC_ED_SAVE);
-        ed.cancel = mk(L"BUTTON", L"إلغاء", BS_PUSHBUTTON, IDC_ED_CANCEL);
-        ed.test = mk(L"BUTTON", L"طباعة تجربة", BS_PUSHBUTTON, IDC_ED_TEST);
-        ed.reset = mk(L"BUTTON", L"رجوع للأصل", BS_PUSHBUTTON, IDC_ED_RESET);
+        ed.save = MakeButton(h, L"حفظ", IDC_ED_SAVE, BTN_PRIMARY, Theme::Bg);
+        ed.cancel = MakeButton(h, L"إلغاء", IDC_ED_CANCEL, BTN_SECONDARY, Theme::Bg);
+        ed.test = MakeButton(h, L"طباعة تجربة", IDC_ED_TEST, BTN_SECONDARY, Theme::Bg);
+        ed.reset = MakeButton(h, L"رجوع للأصل", IDC_ED_RESET, BTN_SECONDARY, Theme::Bg);
         ed.lblW = mk(L"STATIC", L"عرض الورقة (سم):", SS_RIGHT | SS_CENTERIMAGE, 0, WS_EX_RTLREADING);
         ed.editW = mk(L"EDIT", L"", ES_CENTER | WS_BORDER, 0);
         ed.lblH = mk(L"STATIC", L"الطول (سم):", SS_RIGHT | SS_CENTERIMAGE, 0, WS_EX_RTLREADING);
         ed.editH = mk(L"EDIT", L"", ES_CENTER | WS_BORDER, 0);
-        ed.apply = mk(L"BUTTON", L"تطبيق", BS_PUSHBUTTON, IDC_ED_APPLY);
+        ed.apply = MakeButton(h, L"تطبيق", IDC_ED_APPLY, BTN_SMALL, Theme::Bg);
         ed.lblRot = mk(L"STATIC", L"اتجاه دخول الورقة:", SS_RIGHT | SS_CENTERIMAGE, 0, WS_EX_RTLREADING);
         ed.rot = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, IDC_ED_ROTATE, WS_EX_RTLREADING);
         SendMessageW(ed.rot, CB_ADDSTRING, 0, (LPARAM)L"عادي (الجهة العريضة)");
@@ -1144,6 +1298,13 @@ LRESULT CALLBACK EditorProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_PAINT:
         EdPaint(h);
         return 0;
+    case WM_DRAWITEM:
+        DrawButton((const DRAWITEMSTRUCT*)lp);
+        return TRUE;
+    case WM_CTLCOLORSTATIC:
+        SetBkColor((HDC)wp, Theme::Bg);
+        SetTextColor((HDC)wp, Theme::Text);
+        return (LRESULT)g_bgBrush;
     case WM_SETCURSOR:
         if (LOWORD(lp) == HTCLIENT && (HWND)wp == h) {
             POINT p;
@@ -1301,85 +1462,125 @@ void OpenEditor() {
 }
 
 // ---------------------------------------------------------------------------
-// Main window
+// Main window: everything except the inputs and buttons is painted, and the
+// layout runs right to left from fixed 96-dpi coordinates.
 // ---------------------------------------------------------------------------
 
-// The main window places controls right to left but does not mirror their
-// insides, so Arabic controls opt into RTL while numbers and phones stay LTR.
-HWND MakeCtl(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h,
-             int id = 0, DWORD ex = WS_EX_LAYOUTRTL, HFONT font = nullptr) {
-    HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), parent,
-                             (HMENU)(INT_PTR)id, g_inst, nullptr);
-    SendMessageW(c, WM_SETFONT, (WPARAM)(font ? font : g_uiFont), TRUE);
-    return c;
+const int kMainW = 980, kMainH = 664;
+const int kCardY = 92, kCardH = 400, kCardW = 300, kCardGap = 16, kMargin = 24;
+
+struct Label { RECT rc; wstring text; HFONT* font; COLORREF color; };
+struct Input { HWND edit; RECT box; };
+
+vector<Label> g_labels;
+vector<Input> g_inputs;
+HWND g_focus;
+HICON g_icon;
+
+// Rect measured from the right edge of the window, in 96-dpi units.
+RECT RR(int xr, int y, int w, int h) {
+    int W = S(kMainW);
+    return {W - S(xr) - S(w), S(y), W - S(xr), S(y) + S(h)};
 }
 
-HWND MakeEdit(HWND p, int x, int y, int w, int h, int id, bool multi = false, DWORD extra = 0, bool rtl = true) {
-    DWORD st = WS_TABSTOP | WS_BORDER | extra |
-               (multi ? (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_VSCROLL) : ES_AUTOHSCROLL);
-    return MakeCtl(p, L"EDIT", L"", st, x, y, w, h, id, rtl ? WS_EX_LAYOUTRTL : 0);
+int CardX(int i) { return kMargin + i * (kCardW + kCardGap); }
+
+void AddLabel(int xr, int y, int w, int h, const wstring& text, HFONT* font = &g_fLabel, COLORREF c = Theme::Muted) {
+    g_labels.push_back({RR(xr, y, w, h), text, font, c});
 }
+
+HWND AddInput(HWND parent, int xr, int y, int w, int h, int id, bool multi, bool rtl, DWORD extra = 0) {
+    RECT box = RR(xr, y, w, h);
+    DWORD st = WS_CHILD | WS_VISIBLE | WS_TABSTOP | extra |
+               (multi ? (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) : ES_AUTOHSCROLL);
+    HWND e = CreateWindowExW(rtl ? WS_EX_LAYOUTRTL : 0, L"EDIT", L"", st, 0, 0, 10, 10, parent,
+                             (HMENU)(INT_PTR)id, g_inst, nullptr);
+    SendMessageW(e, WM_SETFONT, (WPARAM)g_fInput, TRUE);
+    // Borderless edit centred inside a painted rounded box.
+    HDC dc = GetDC(e);
+    HGDIOBJ old = SelectObject(dc, g_fInput);
+    TEXTMETRICW tm;
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(e, dc);
+    int padX = S(10), lineH = tm.tmHeight + S(2);
+    RECT er = box;
+    if (multi) {
+        InflateRect(&er, -padX, -S(7));
+    } else {
+        er.left += padX;
+        er.right -= padX;
+        er.top = box.top + (box.bottom - box.top - lineH) / 2;
+        er.bottom = er.top + lineH;
+    }
+    MoveWindow(e, er.left, er.top, er.right - er.left, er.bottom - er.top, FALSE);
+    g_inputs.push_back({e, box});
+    return e;
+}
+
+// A labelled input inside a card: label (20) + box (32) = one 62-unit row.
+HWND AddField(HWND parent, int xr, int y, int w, int field, int boxH = 32, bool rtl = true) {
+    AddLabel(xr, y, w, 20, kFields[field].label);
+    g_edit[field] = AddInput(parent, xr, y + 20, w, boxH, IDC_EDIT_BASE + field, kFields[field].multi, rtl);
+    return g_edit[field];
+}
+
+void PlaceButton(HWND b, RECT r) { MoveWindow(b, r.left, r.top, r.right - r.left, r.bottom - r.top, FALSE); }
 
 void BuildMain(HWND h) {
-    const int colW = 300, gx[3] = {12, 324, 636};
-    const wchar_t* groups[3] = {L"1. بيانات المرسل", L"3. بيانات المستلم", L"5. معلومات الشحنة"};
-    for (int i = 0; i < 3; ++i)
-        MakeCtl(h, L"BUTTON", groups[i], BS_GROUPBOX, gx[i], 8, colW, 404, 0, WS_EX_LAYOUTRTL, g_uiBold);
+    const int in = 16, fw = kCardW - 2 * in, y0 = kCardY + 62;
 
-    auto item = [&](int col, int y, int field, int height = 26) {
-        MakeCtl(h, L"STATIC", kFields[field].label, 0, gx[col] + 14, y, colW - 28, 20);
-        bool ltr = field == F_SPHONE || field == F_RPHONE || field == F_VALUE || field == F_REF;
-        g_edit[field] = MakeEdit(h, gx[col] + 14, y + 20, colW - 28, height, IDC_EDIT_BASE + field, kFields[field].multi,
-                                 0, !ltr);
-    };
-    // Sender
-    item(0, 32, F_SNAME);
-    item(0, 90, F_SPHONE);
-    item(0, 148, F_SADDR, 120);
-    MakeCtl(h, L"STATIC", L"بيانات المرسل بتنحفظ لحالها، ما في داعي تكتبها كل مرة.", 0, gx[0] + 14, 300, colW - 28, 40);
-    // Receiver
-    item(1, 32, F_RNAME);
-    item(1, 90, F_RPHONE);
-    item(1, 148, F_RCITY);
-    item(1, 206, F_RSTREET, 100);
-    // Shipment
-    MakeCtl(h, L"STATIC", L"رقم البوليصة (للسجل فقط)", 0, gx[2] + 14, 32, colW - 28, 20);
-    g_waybillNo = MakeEdit(h, gx[2] + 14, 52, colW - 28, 26, IDC_WAYBILL, false, 0, false);
-    MakeCtl(h, L"STATIC", kFields[F_DATE].label, 0, gx[2] + 14, 86, 130, 20);
-    g_edit[F_DATE] = MakeEdit(h, gx[2] + 14, 106, 130, 26, IDC_EDIT_BASE + F_DATE, false, 0, false);
-    MakeCtl(h, L"STATIC", kFields[F_PIECES].label, 0, gx[2] + 156, 86, 130, 20);
-    g_edit[F_PIECES] = MakeEdit(h, gx[2] + 156, 106, 130, 26, IDC_EDIT_BASE + F_PIECES, false, 0, false);
-    item(2, 140, F_VALUE);
-    item(2, 198, F_REF);
-    item(2, 256, F_NOTES, 112);
+    // 1. Sender
+    int x = CardX(0) + in;
+    AddField(h, x, y0, fw, F_SNAME);
+    AddField(h, x, y0 + 62, fw, F_SPHONE, 32, false);
+    AddField(h, x, y0 + 124, fw, F_SADDR, kCardY + kCardH - 46 - (y0 + 144));
+    AddLabel(x + 26, kCardY + kCardH - 38, fw - 26, 24, L"بيانات المرسل بتنحفظ تلقائياً", &g_fSmall);
 
-    // Print settings
-    MakeCtl(h, L"BUTTON", L"الطباعة", BS_GROUPBOX, 12, 418, 924, 62, 0, WS_EX_LAYOUTRTL, g_uiBold);
-    MakeCtl(h, L"STATIC", L"حجم الخط:", SS_CENTERIMAGE, 26, 440, 70, 26);
-    g_fontSize = MakeEdit(h, 96, 440, 56, 26, IDC_FONTSIZE, false, ES_NUMBER, false);
-    MakeCtl(h, L"STATIC", L"عدد مرات الطباعة:", SS_CENTERIMAGE, 172, 440, 120, 26);
-    g_copies = MakeEdit(h, 292, 440, 56, 26, IDC_COPIES, false, ES_NUMBER, false);
-    auto updown = [&](HWND buddy, int lo, int hi) {
-        HWND u = CreateWindowExW(0, UPDOWN_CLASSW, nullptr,
-                                 WS_CHILD | WS_VISIBLE | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS,
-                                 0, 0, 0, 0, h, nullptr, g_inst, nullptr);
-        SendMessageW(u, UDM_SETBUDDY, (WPARAM)buddy, 0);
-        SendMessageW(u, UDM_SETRANGE32, lo, hi);
-    };
-    updown(g_fontSize, 6, 24);
-    updown(g_copies, 1, 20);
-    MakeCtl(h, L"STATIC", L"(كل نسخة بتنطبع على ورقة جديدة)", SS_CENTERIMAGE, 356, 440, 210, 26);
-    g_printerLbl = MakeCtl(h, L"STATIC", L"", SS_CENTERIMAGE | SS_ENDELLIPSIS, 576, 440, 350, 26);
+    // 3. Receiver
+    x = CardX(1) + in;
+    AddField(h, x, y0, fw, F_RNAME);
+    AddField(h, x, y0 + 62, fw, F_RPHONE, 32, false);
+    AddField(h, x, y0 + 124, fw, F_RCITY);
+    AddField(h, x, y0 + 186, fw, F_RSTREET, kCardY + kCardH - in - (y0 + 206));
 
-    // Buttons
+    // 5. Shipment
+    x = CardX(2) + in;
+    AddLabel(x, y0, fw, 20, L"رقم البوليصة (للسجل فقط)");
+    g_waybillNo = AddInput(h, x, y0 + 20, fw, 32, IDC_WAYBILL, false, false);
+    int half = (fw - 12) / 2;
+    AddField(h, x, y0 + 62, half, F_DATE, 32, false);
+    AddField(h, x + half + 12, y0 + 62, half, F_PIECES, 32, false);
+    AddField(h, x, y0 + 124, fw, F_VALUE, 32, false);
+    AddField(h, x, y0 + 186, fw, F_REF, 32, false);
+    AddField(h, x, y0 + 248, fw, F_NOTES, kCardY + kCardH - in - (y0 + 268));
+
+    // Print settings bar
+    const int sy = kCardY + kCardH + 14 + 13;
+    AddLabel(kMargin + 16, sy, 62, 32, L"حجم الخط", &g_fLabel, Theme::Text);
+    PlaceButton(MakeButton(h, L"+", IDC_FONT_INC, BTN_SMALL, Theme::Card), RR(kMargin + 82, sy, 32, 32));
+    g_fontSize = AddInput(h, kMargin + 118, sy, 50, 32, IDC_FONTSIZE, false, false, ES_NUMBER | ES_CENTER);
+    PlaceButton(MakeButton(h, L"−", IDC_FONT_DEC, BTN_SMALL, Theme::Card), RR(kMargin + 172, sy, 32, 32));
+
+    AddLabel(kMargin + 226, sy, 70, 32, L"عدد النسخ", &g_fLabel, Theme::Text);
+    PlaceButton(MakeButton(h, L"+", IDC_COPY_INC, BTN_SMALL, Theme::Card), RR(kMargin + 300, sy, 32, 32));
+    g_copies = AddInput(h, kMargin + 336, sy, 50, 32, IDC_COPIES, false, false, ES_NUMBER | ES_CENTER);
+    PlaceButton(MakeButton(h, L"−", IDC_COPY_DEC, BTN_SMALL, Theme::Card), RR(kMargin + 390, sy, 32, 32));
+    AddLabel(kMargin + 430, sy, 170, 32, L"كل نسخة على ورقة جديدة", &g_fSmall);
+
+    PlaceButton(MakeButton(h, L"تغيير الطابعة", IDC_PRINTER, BTN_SECONDARY, Theme::Card),
+                RR(kMainW - kMargin - 16 - 130, sy, 130, 32));
+
+    // Actions
+    const int ay = kCardY + kCardH + 14 + 58 + 14;
+    PlaceButton(MakeButton(h, L"طباعة البوليصة", IDC_PRINT, BTN_PRIMARY, Theme::Bg), RR(kMargin, ay, 220, 46));
     struct Btn { const wchar_t* text; int id; } btns[] = {
-        {L"طباعة البوليصة", IDC_PRINT}, {L"ضبط بالماوس", IDC_EDITOR}, {L"طباعة تجربة", IDC_TEST},
-        {L"بوليصة جديدة", IDC_CLEAR}, {L"اختيار الطابعة", IDC_PRINTER}, {L"فتح سجل الإكسل", IDC_EXCEL},
+        {L"ضبط المواقع", IDC_EDITOR}, {L"طباعة تجربة", IDC_TEST},
+        {L"بوليصة جديدة", IDC_CLEAR}, {L"سجل الإكسل", IDC_EXCEL},
     };
-    for (int i = 0; i < 6; ++i)
-        MakeCtl(h, L"BUTTON", btns[i].text, WS_TABSTOP | (i == 0 ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
-                12 + i * 155, 490, 149, 40, btns[i].id, WS_EX_LAYOUTRTL, i == 0 ? g_uiBold : nullptr);
-    g_status = MakeCtl(h, L"STATIC", L"", SS_CENTERIMAGE | SS_ENDELLIPSIS, 12, 538, 924, 24);
+    for (int i = 0; i < 4; ++i)
+        PlaceButton(MakeButton(h, btns[i].text, btns[i].id, BTN_SECONDARY, Theme::Bg),
+                    RR(kMargin + 232 + i * 176, ay, 164, 46));
 
     // Initial values
     SetWindowTextW(g_edit[F_SNAME], IniDecode(IniGet(L"sender", L"name")).c_str());
@@ -1391,8 +1592,134 @@ void BuildMain(HWND h) {
     SetWindowTextW(g_copies, copies.empty() ? L"1" : copies.c_str());
     SetWindowTextW(g_edit[F_DATE], Today().c_str());
     SetWindowTextW(g_edit[F_PIECES], L"1");
-    UpdatePrinterLabel();
-    SetStatus(L"عبّي الخانات واضغط \"طباعة البوليصة\". أول مرة جرّب \"ضبط بالماوس\" عشان تظبط المواقع.");
+    SetStatus(L"عبّي الخانات واضغط \"طباعة البوليصة\". أول مرة اضغط \"ضبط المواقع\" عشان تظبط مكان الكتابة.");
+}
+
+wstring TodayLong() {
+    static const wchar_t* days[] = {L"الأحد", L"الإثنين", L"الثلاثاء", L"الأربعاء", L"الخميس", L"الجمعة", L"السبت"};
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    return wstring(days[t.wDayOfWeek]) + L"  " + Today();
+}
+
+void PaintMain(HWND h) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(h, &ps);
+    RECT cr;
+    GetClientRect(h, &cr);
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, cr.right, cr.bottom);
+    HGDIOBJ ob = SelectObject(mem, bmp);
+    FillRect(mem, &cr, g_bgBrush);
+
+    const int sy = kCardY + kCardH + 14;
+    RECT settings = RR(kMargin, sy, kMainW - 2 * kMargin, 58);
+    RECT status = {0, cr.bottom - S(30), cr.right, cr.bottom};
+    {
+        Gdiplus::Graphics g(mem);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+        // Header with a gradient and an orange underline.
+        Gdiplus::LinearGradientBrush hb(Gdiplus::Point(0, 0), Gdiplus::Point(cr.right, 0), GC(Theme::PurpleLight),
+                                        GC(Theme::PurpleDark));
+        g.FillRectangle(&hb, 0, 0, (INT)cr.right, (INT)S(72));
+        Gdiplus::SolidBrush ob2(GC(Theme::Orange));
+        g.FillRectangle(&ob2, 0, (INT)S(72), (INT)cr.right, (INT)S(4));
+        FillRound(g, RR(kMainW - kMargin - 190, 22, 190, 30), (float)S(15), RGB(255, 255, 255), 38);
+
+        // Cards with a soft shadow.
+        auto card = [&](RECT r) {
+            RECT sh = r;
+            OffsetRect(&sh, 0, S(3));
+            FillRound(g, sh, (float)S(14), Theme::PurpleDark, 18);
+            FillRound(g, r, (float)S(14), Theme::Card);
+            StrokeRound(g, r, (float)S(14), Theme::CardBorder, 1);
+        };
+        for (int i = 0; i < 3; ++i) {
+            int x = CardX(i);
+            card(RR(x, kCardY, kCardW, kCardH));
+            Gdiplus::SolidBrush badge(GC(Theme::Purple));
+            RECT b = RR(x + 16, kCardY + 14, 28, 28);
+            g.FillEllipse(&badge, (INT)b.left, (INT)b.top, (INT)(b.right - b.left), (INT)(b.bottom - b.top));
+            RECT line = RR(x + 16, kCardY + 52, kCardW - 32, 1);
+            Gdiplus::SolidBrush lb(GC(Theme::CardBorder));
+            g.FillRectangle(&lb, (INT)line.left, (INT)line.top, (INT)(line.right - line.left), 1);
+        }
+        // Small "i" bubble beside the sender note.
+        RECT tip = RR(CardX(0) + 16, kCardY + kCardH - 34, 18, 18);
+        Gdiplus::SolidBrush tb(GC(Theme::Orange));
+        g.FillEllipse(&tb, (INT)tip.left, (INT)tip.top, (INT)(tip.right - tip.left), (INT)(tip.bottom - tip.top));
+        card(settings);
+
+        // Input boxes; the focused one gets a purple ring.
+        for (const Input& in : g_inputs) {
+            bool focus = in.edit == g_focus;
+            if (focus) {
+                RECT ring = in.box;
+                InflateRect(&ring, S(3), S(3));
+                FillRound(g, ring, (float)S(11), Theme::Purple, 40);
+            }
+            FillRound(g, in.box, (float)S(8), RGB(255, 255, 255));
+            StrokeRound(g, in.box, (float)S(8), focus ? Theme::Purple : Theme::InputBorder, focus ? 1.8f : 1.2f);
+        }
+
+        Gdiplus::SolidBrush sb(GC(Theme::StatusBg));
+        g.FillRectangle(&sb, 0, (INT)status.top, (INT)cr.right, (INT)(status.bottom - status.top));
+        COLORREF dotColor = g_statusKind == 1 ? Theme::Good : g_statusKind == 2 ? Theme::Bad : Theme::Purple;
+        Gdiplus::SolidBrush db(GC(dotColor));
+        RECT dot = {cr.right - S(kMargin) - S(10), status.top + S(10), cr.right - S(kMargin), status.top + S(20)};
+        g.FillEllipse(&db, (INT)dot.left, (INT)dot.top, (INT)S(10), (INT)S(10));
+    }
+
+    // Header text
+    if (g_icon) {
+        RECT ir = RR(kMargin, 16, 40, 40);
+        DrawIconEx(mem, ir.left, ir.top, g_icon, S(40), S(40), 0, nullptr, DI_NORMAL);
+    }
+    PaintText(mem, L"طباعة بوليصة الشحن", RR(kMargin + 52, 8, 500, 36), g_fTitle, RGB(255, 255, 255));
+    PaintText(mem, L"عبّي البيانات، والبرنامج بيطبعها بمكانها على ورقة البوليصة", RR(kMargin + 52, 42, 500, 22),
+              g_fSub, Theme::HeaderSub);
+    PaintText(mem, TodayLong(), RR(kMainW - kMargin - 190, 22, 190, 30), g_fLabel, RGB(255, 255, 255),
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // Card titles and badges
+    const wchar_t* titles[3] = {L"بيانات المرسل", L"بيانات المستلم", L"معلومات الشحنة"};
+    const wchar_t* numbers[3] = {L"1", L"3", L"5"};
+    for (int i = 0; i < 3; ++i) {
+        int x = CardX(i);
+        PaintText(mem, numbers[i], RR(x + 16, kCardY + 14, 28, 28), g_fButton, RGB(255, 255, 255),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        PaintText(mem, titles[i], RR(x + 54, kCardY + 12, kCardW - 70, 32), g_fCard, Theme::Text);
+    }
+    PaintText(mem, L"i", RR(CardX(0) + 16, kCardY + kCardH - 34, 18, 18), g_fSmall, RGB(255, 255, 255),
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    for (const Label& l : g_labels) PaintText(mem, l.text, l.rc, *l.font, l.color);
+
+    // Printer name, on the left of the settings bar beside its button.
+    wstring printer = CurrentPrinter();
+    RECT pr = RR(kMainW - kMargin - 16 - 130 - 230, kCardY + kCardH + 14 + 13, 220, 32);
+    PaintText(mem, L"الطابعة: " + (printer.empty() ? wstring(L"غير محددة") : printer), pr, g_fLabel, Theme::Text,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    RECT st = status;
+    st.right -= S(kMargin + 18);
+    st.left += S(kMargin);
+    PaintText(mem, g_statusText, st, g_fLabel,
+              g_statusKind == 2 ? Theme::Bad : g_statusKind == 1 ? Theme::Good : Theme::Text,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    BitBlt(dc, 0, 0, cr.right, cr.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, ob);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(h, &ps);
+}
+
+void Step(HWND edit, int delta, int lo, int hi) {
+    int v = ReadInt(edit, lo, lo, hi) + delta;
+    v = v < lo ? lo : (v > hi ? hi : v);
+    SetWindowTextW(edit, std::to_wstring(v).c_str());
 }
 
 LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
@@ -1400,10 +1727,45 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CREATE:
         g_main = h;
         BuildMain(h);
-        SetFocus(g_edit[F_SNAME]);
         return 0;
-    case WM_COMMAND:
-        switch (LOWORD(wp)) {
+    case WM_SETFOCUS:
+        SetFocus(g_edit[F_RNAME]);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        PaintMain(h);
+        return 0;
+    case WM_DRAWITEM:
+        DrawButton((const DRAWITEMSTRUCT*)lp);
+        return TRUE;
+    case WM_CTLCOLOREDIT:
+        SetTextColor((HDC)wp, Theme::Text);
+        SetBkColor((HDC)wp, RGB(255, 255, 255));
+        return (LRESULT)GetStockObject(WHITE_BRUSH);
+    case WM_LBUTTONDOWN: {  // a click on a box's padding focuses its input
+        POINT p = {(short)LOWORD(lp), (short)HIWORD(lp)};
+        for (const Input& in : g_inputs)
+            if (PtInRect(&in.box, p)) { SetFocus(in.edit); break; }
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wp), code = HIWORD(wp);
+        if (code == EN_SETFOCUS || code == EN_KILLFOCUS) {
+            g_focus = code == EN_SETFOCUS ? (HWND)lp : nullptr;
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+        }
+        if (code == BN_CLICKED || code == BN_DOUBLECLICKED) {
+            switch (id) {
+                case IDC_FONT_DEC: Step(g_fontSize, -1, 6, 24); return 0;
+                case IDC_FONT_INC: Step(g_fontSize, 1, 6, 24); return 0;
+                case IDC_COPY_DEC: Step(g_copies, -1, 1, 20); return 0;
+                case IDC_COPY_INC: Step(g_copies, 1, 1, 20); return 0;
+            }
+        }
+        if (code != BN_CLICKED) break;
+        switch (id) {
             case IDC_PRINT: DoPrint(); return 0;
             case IDC_EDITOR: OpenEditor(); return 0;
             case IDC_TEST: SaveState(); DoTestPage(g_lay, h); return 0;
@@ -1411,11 +1773,8 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             case IDC_PRINTER: ChoosePrinter(); return 0;
             case IDC_EXCEL: OpenExcel(); return 0;
         }
-        if (HIWORD(wp) == EN_CHANGE && g_editor) InvalidateRect(g_editor, nullptr, FALSE);
         break;
-    case WM_CTLCOLORSTATIC:
-        SetBkMode((HDC)wp, TRANSPARENT);
-        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    }
     case WM_CLOSE:
         SaveState();
         DestroyWindow(h);
@@ -1429,8 +1788,11 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_inst = inst;
-    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS};
+    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
+    Gdiplus::GdiplusStartupInput gsi;
+    ULONG_PTR gdiplusToken;
+    Gdiplus::GdiplusStartup(&gdiplusToken, &gsi, nullptr);
 
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -1446,31 +1808,39 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     HDC screen = GetDC(nullptr);
     g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(nullptr, screen);
-    g_uiFont = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Tahoma");
-    g_uiBold = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Tahoma");
+    g_fTitle = MakeFont(17, true);
+    g_fSub = MakeFont(10, false);
+    g_fCard = MakeFont(12, true);
+    g_fLabel = MakeFont(9.5, false);
+    g_fInput = MakeFont(11, false);
+    g_fButton = MakeFont(10.5, true);
+    g_fSmall = MakeFont(9, false);
+    g_fBig = MakeFont(14, true);
+    g_uiFont = g_fLabel;
+    g_bgBrush = CreateSolidBrush(Theme::Bg);
     g_formBmp = (HBITMAP)LoadImageW(inst, L"FORMBMP", IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-    HICON icon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    g_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, S(40), S(40), 0);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = MainProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"WaybillMain";
-    wc.hIcon = icon;
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     RegisterClassW(&wc);
     wc.lpfnWndProc = EditorProc;
     wc.lpszClassName = L"WaybillEditor";
-    wc.hbrBackground = nullptr;
     RegisterClassW(&wc);
 
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = {0, 0, S(948), S(572)};
-    AdjustWindowRectEx(&r, style, FALSE, WS_EX_LAYOUTRTL | WS_EX_NOINHERITLAYOUT | WS_EX_CONTROLPARENT);
-    HWND h = CreateWindowExW(WS_EX_LAYOUTRTL | WS_EX_NOINHERITLAYOUT | WS_EX_CONTROLPARENT, L"WaybillMain", L"طباعة بوليصة الشحن",
-                             style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    RECT r = {0, 0, S(kMainW), S(kMainH)};
+    AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int w = r.right - r.left, hgt = r.bottom - r.top;
+    HWND h = CreateWindowExW(WS_EX_CONTROLPARENT, L"WaybillMain", L"طباعة بوليصة الشحن", style,
+                             work.left + std::max(0, (int)(work.right - work.left - w) / 2),
+                             work.top + std::max(0, (int)(work.bottom - work.top - hgt) / 2), w, hgt,
                              nullptr, nullptr, inst, nullptr);
     ShowWindow(h, show);
     UpdateWindow(h);
@@ -1481,5 +1851,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    Gdiplus::GdiplusShutdown(gdiplusToken);
     return 0;
 }
