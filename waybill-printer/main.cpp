@@ -36,7 +36,8 @@ enum Align { AUTO, LEFT, CENTER };
 
 struct FieldDef {
     const wchar_t* key;
-    const wchar_t* label;
+    const wchar_t* label;  // Arabic wording as printed on the form
+    const wchar_t* en;     // English wording as printed on the form
     bool multi;
     Align align;
     int x1, y1, x2, y2;  // writing area on the 1600x748 reference photo
@@ -45,18 +46,18 @@ struct FieldDef {
 const int kPhotoW = 1600, kPhotoH = 748;
 
 const FieldDef kFields[] = {
-    {L"date",          L"التاريخ",                  false, LEFT,   868,  50, 1022,  96},
-    {L"sender_name",   L"اسم المرسل",               false, AUTO,    62, 200,  606, 233},
-    {L"sender_phone",  L"هاتف المرسل",              false, AUTO,    62, 265,  606, 338},
-    {L"sender_addr",   L"عنوان المرسل",             true,  AUTO,    56, 372,  606, 545},
-    {L"recv_name",     L"اسم المستلم",              false, AUTO,   620, 196, 1188, 228},
-    {L"recv_phone",    L"هاتف المستلم",             false, AUTO,   620, 260, 1188, 336},
-    {L"recv_city",     L"المدينة / القرية",         false, AUTO,   620, 366, 1188, 438},
-    {L"recv_street",   L"الشارع وأقرب معلم",        true,  AUTO,   620, 466, 1196, 546},
-    {L"pieces",        L"عدد الطرود",               false, CENTER, 1200, 163, 1462, 216},
-    {L"notes",         L"ملاحظات",                  true,  AUTO,  1200, 244, 1578, 384},
-    {L"ref",           L"رقم المرسل المرجعي",       false, AUTO,  1202, 410, 1582, 548},
-    {L"value",         L"قيمة الطلب شامل التوصيل",  false, CENTER, 1210, 582, 1590, 706},
+    {L"date",         L"التاريخ",                       L"Date",                          false, LEFT,   868,  50, 1022,  96},
+    {L"sender_name",  L"اسم المرسل المعتمد لدى سبيكس",  L"Sender's Name",                 false, AUTO,    62, 200,  606, 233},
+    {L"sender_phone", L"رقم هاتف المرسل المعتمد",       L"Sender's Phone number",         false, AUTO,    62, 265,  606, 338},
+    {L"sender_addr",  L"عنوان المرسل",                  L"Sender's Address",              true,  AUTO,    56, 372,  606, 545},
+    {L"recv_name",    L"اسم المستلم",                   L"Name",                          false, AUTO,   620, 196, 1188, 228},
+    {L"recv_phone",   L"رقم الهاتف",                    L"Phone No.",                     false, AUTO,   620, 260, 1188, 336},
+    {L"recv_city",    L"المدينة/القرية",                L"City / the village",            false, AUTO,   620, 366, 1188, 438},
+    {L"recv_street",  L"الشارع إن وجد واقرب معلم",      L"The street that he found the nearest", true, AUTO, 620, 466, 1196, 546},
+    {L"pieces",       L"عدد الطرود",                    L"No. of pieces",                 false, CENTER, 1200, 163, 1462, 216},
+    {L"notes",        L"6. ملاحظات",                    L"6. Notes",                      true,  AUTO,  1200, 244, 1578, 384},
+    {L"ref",          L"7. رقم المرسل المرجعي",         L"7. The sender's reference number", false, AUTO, 1202, 410, 1582, 548},
+    {L"value",        L"8. قيمة الطلب شامل التوصيل",    L"8. The value of the order includes the delivery", false, CENTER, 1210, 582, 1590, 706},
 };
 const int NF = sizeof(kFields) / sizeof(kFields[0]);
 
@@ -70,7 +71,7 @@ struct Box { double x, y, w, h; };
 struct Layout {
     double paperW = 240, paperH = 112;  // mm
     double offX = 0, offY = 0;          // shift of everything, mm
-    int rotate = 0;                     // 0, 90 or 270
+    int rotate = 90;                    // 0 = fed wide edge first, 90/270 = fed lengthwise
     bool customPaper = true;
     wstring font = L"Arial";
     bool bold = true;
@@ -109,13 +110,14 @@ HWND g_editor;
 
 enum {
     IDC_PRINT = 100, IDC_EDITOR, IDC_TEST, IDC_CLEAR, IDC_PRINTER, IDC_EXCEL,
-    IDC_FONT_DEC, IDC_FONT_INC, IDC_COPY_DEC, IDC_COPY_INC,
+    IDC_FONT_DEC, IDC_FONT_INC, IDC_COPY_DEC, IDC_COPY_INC, IDC_ROT_LONG, IDC_ROT_FLIP, IDC_ROT_WIDE,
     IDC_EDIT_BASE = 200,
     IDC_WAYBILL = 300, IDC_FONTSIZE, IDC_COPIES,
     IDC_ED_SAVE = 400, IDC_ED_CANCEL, IDC_ED_TEST, IDC_ED_RESET, IDC_ED_APPLY, IDC_ED_ROTATE
 };
 
-int S(int v) { return MulDiv(v, g_dpi, 96); }
+double g_fit = 1;  // shrinks the whole window on small screens
+int S(int v) { return (int)lround(v * g_dpi / 96.0 * g_fit); }
 
 // ---------------------------------------------------------------------------
 // Text helpers
@@ -249,7 +251,7 @@ void LoadLayout(Layout& lay) {
     lay.paperH = IniGetD(L"layout", L"paper_h", 112);
     lay.offX = IniGetD(L"layout", L"offset_x", 0);
     lay.offY = IniGetD(L"layout", L"offset_y", 0);
-    lay.rotate = (int)IniGetD(L"layout", L"rotate", 0);
+    lay.rotate = (int)IniGetD(L"layout", L"rotate", 90);
     if (lay.rotate != 90 && lay.rotate != 270) lay.rotate = 0;
     lay.customPaper = IniGetD(L"layout", L"custom_paper", 1) != 0;
     wstring font = IniGet(L"layout", L"font");
@@ -294,38 +296,53 @@ RECT FieldRect(const Layout& lay, int i, double s, double ox, double oy) {
             (LONG)lround(ox + (x + b.w) * s), (LONG)lround(oy + (y + b.h) * s)};
 }
 
-// Draws text inside rc, shrinking the font until it fits.
+HFONT PrintFont(const Layout& lay, double pt, double s) {
+    int h = (int)lround(pt * 25.4 / 72.0 * s);
+    return CreateFontW(-(h < 1 ? 1 : h), 0, 0, 0, lay.bold ? FW_BOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                       OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, lay.font.c_str());
+}
+
+// Draws text inside rc: first shrinks the font, then lets a one-line field
+// wrap onto more lines, and only cuts the text as a last resort.
 void DrawFitted(HDC dc, const wstring& text, RECT rc, const FieldDef& f, const Layout& lay,
                 double s, COLORREF color, double maxPt) {
     if (text.empty()) return;
     bool ar = HasArabic(text);
-    UINT fmt = DT_NOPREFIX | (f.multi ? DT_WORDBREAK : (DT_SINGLELINE | DT_VCENTER));
-    if (f.align == CENTER) fmt |= DT_CENTER;
-    else if (f.align == LEFT) fmt |= DT_LEFT;
-    else fmt |= ar ? DT_RIGHT : DT_LEFT;
-    if (ar) fmt |= DT_RTLREADING;
-
+    UINT align = f.align == CENTER ? DT_CENTER : f.align == LEFT ? DT_LEFT : ar ? DT_RIGHT : DT_LEFT;
+    UINT base = DT_NOPREFIX | align | (ar ? DT_RTLREADING : 0);
     int boxW = rc.right - rc.left, boxH = rc.bottom - rc.top;
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
-    for (double pt = maxPt;; pt -= 0.5) {
-        int h = (int)lround(pt * 25.4 / 72.0 * s);
-        if (h < 1) h = 1;
-        HFONT font = CreateFontW(-h, 0, 0, 0, lay.bold ? FW_BOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                 OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                                 DEFAULT_PITCH, lay.font.c_str());
-        HGDIOBJ old = SelectObject(dc, font);
-        RECT calc = {0, 0, boxW, 0};
-        DrawTextW(dc, text.c_str(), -1, &calc, (fmt & ~DT_VCENTER) | DT_CALCRECT);
-        bool fits = calc.right - calc.left <= boxW && calc.bottom - calc.top <= boxH;
-        if (fits || pt <= 6) {
-            UINT extra = (!fits && !f.multi) ? DT_END_ELLIPSIS : 0;
-            DrawTextW(dc, text.c_str(), -1, &rc, fmt | extra);
+
+    // Tries sizes from maxPt down to minPt; draws and returns true on the first fit.
+    auto attempt = [&](bool wrap, double minPt) {
+        for (double pt = maxPt; pt >= minPt - 0.01; pt -= 0.5) {
+            HFONT font = PrintFont(lay, pt, s);
+            HGDIOBJ old = SelectObject(dc, font);
+            RECT calc = {0, 0, boxW, 0};
+            DrawTextW(dc, text.c_str(), -1, &calc, base | DT_CALCRECT | (wrap ? DT_WORDBREAK : DT_SINGLELINE));
+            int tw = calc.right - calc.left, th = calc.bottom - calc.top;
+            bool fits = tw <= boxW && th <= boxH;
+            if (fits) {
+                RECT r = rc;
+                if (wrap && !f.multi) r.top += (boxH - th) / 2;  // keep wrapped one-line fields centred
+                DrawTextW(dc, text.c_str(), -1, &r, base | (wrap ? DT_WORDBREAK : DT_SINGLELINE | DT_VCENTER));
+            }
+            SelectObject(dc, old);
+            DeleteObject(font);
+            if (fits) return true;
         }
-        SelectObject(dc, old);
-        DeleteObject(font);
-        if (fits || pt <= 6) break;
-    }
+        return false;
+    };
+    if (!f.multi && attempt(false, std::min(maxPt, 8.0))) return;
+    if (attempt(true, 6)) return;
+
+    HFONT font = PrintFont(lay, 6, s);
+    HGDIOBJ old = SelectObject(dc, font);
+    DrawTextW(dc, text.c_str(), -1, &rc,
+              base | (f.multi ? DT_WORDBREAK : DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS));
+    SelectObject(dc, old);
+    DeleteObject(font);
 }
 
 void Render(HDC dc, const Layout& lay, const wstring* texts, double s, double ox, double oy,
@@ -376,6 +393,43 @@ wstring DefaultPrinter() {
 
 wstring CurrentPrinter() { return g_printer.empty() ? DefaultPrinter() : g_printer; }
 
+// A sheet fed lengthwise is drawn upright into a bitmap that is then turned
+// a quarter turn pixel by pixel, so Arabic shaping never depends on how a
+// printer driver handles rotated text.
+vector<uint32_t> RenderUpright(const Layout& lay, const wstring* texts, const RenderOpts& o, double s, int& w, int& h) {
+    w = (int)lround(lay.paperW * s);
+    h = (int)lround(lay.paperH * s);
+    vector<uint32_t> out;
+    HDC mem = CreateCompatibleDC(nullptr);
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bmp) {
+        HGDIOBJ old = SelectObject(mem, bmp);
+        RECT r = {0, 0, w, h};
+        FillRect(mem, &r, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        Render(mem, lay, texts, s, 0, 0, o);
+        GdiFlush();
+        out.assign((const uint32_t*)bits, (const uint32_t*)bits + (size_t)w * h);
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+    }
+    DeleteDC(mem);
+    return out;
+}
+
+// 90: the form's top edge ends up along the right side of the page; 270: along the left.
+vector<uint32_t> Turn(const vector<uint32_t>& src, int w, int h, int rotate) {
+    vector<uint32_t> dst(src.size());
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            int X = rotate == 90 ? h - 1 - y : y, Y = rotate == 90 ? x : w - 1 - x;
+            dst[(size_t)Y * h + X] = src[(size_t)y * w + x];
+        }
+    return dst;
+}
+
 // Prints one page per copy, so each copy lands on the next sheet in the tray.
 bool PrintPages(const Layout& lay, const wstring* texts, int copies, bool testPage, wstring& err) {
     wstring name = CurrentPrinter();
@@ -415,34 +469,45 @@ bool PrintPages(const Layout& lay, const wstring* texts, int copies, bool testPa
     double physX = GetDeviceCaps(dc, PHYSICALOFFSETX), physY = GetDeviceCaps(dc, PHYSICALOFFSETY);
     double sx = dpiX / 25.4, sy = dpiY / 25.4, s0 = std::max(sx, sy);
 
-    // Draw in uniform units (s0 per mm), then map to the page with rotation
-    // and the printer's unprintable margin taken out.
-    XFORM xf = {};
-    if (lay.rotate == 90) {
-        xf.eM21 = (FLOAT)(-sx / s0); xf.eDx = (FLOAT)(lay.paperH * sx - physX);
-        xf.eM12 = (FLOAT)(sy / s0);  xf.eDy = (FLOAT)(-physY);
-    } else if (lay.rotate == 270) {
-        xf.eM21 = (FLOAT)(sx / s0);  xf.eDx = (FLOAT)(-physX);
-        xf.eM12 = (FLOAT)(-sy / s0); xf.eDy = (FLOAT)(lay.paperW * sy - physY);
-    } else {
-        xf.eM11 = (FLOAT)(sx / s0);  xf.eDx = (FLOAT)(-physX);
-        xf.eM22 = (FLOAT)(sy / s0);  xf.eDy = (FLOAT)(-physY);
+    RenderOpts o;
+    o.boxes = testPage;
+    o.placeholders = testPage;
+    vector<uint32_t> turned;
+    int tw = 0, th = 0;
+    if (lay.rotate != 0) {
+        int w, h;
+        vector<uint32_t> upright = RenderUpright(lay, texts, o, std::min(s0, 300 / 25.4), w, h);
+        if (upright.empty()) {
+            DeleteDC(dc);
+            err = L"ما في ذاكرة كافية لتجهيز الصفحة.";
+            return false;
+        }
+        turned = Turn(upright, w, h, lay.rotate);
+        tw = h;
+        th = w;
     }
 
     DOCINFOW di = {};
     di.cbSize = sizeof(di);
     di.lpszDocName = testPage ? L"Waybill test page" : L"Waybill";
     bool ok = StartDocW(dc, &di) > 0;
-    RenderOpts o;
-    o.boxes = testPage;
-    o.placeholders = testPage;
     for (int c = 0; ok && c < copies; ++c) {
         ok = StartPage(dc) > 0;
         if (!ok) break;
-        SetGraphicsMode(dc, GM_ADVANCED);
-        SetWorldTransform(dc, &xf);
-        Render(dc, lay, texts, s0, 0, 0, o);
-        ModifyWorldTransform(dc, nullptr, MWT_IDENTITY);
+        if (lay.rotate != 0) {
+            BITMAPINFO bi = {};
+            bi.bmiHeader = {sizeof(BITMAPINFOHEADER), tw, -th, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+            StretchDIBits(dc, (int)-physX, (int)-physY, (int)lround(lay.paperH * sx), (int)lround(lay.paperW * sy),
+                          0, 0, tw, th, turned.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        } else {
+            // Draw in uniform units (s0 per mm), scaled to the page with the
+            // printer's unprintable margin taken out.
+            XFORM xf = {(FLOAT)(sx / s0), 0, 0, (FLOAT)(sy / s0), (FLOAT)-physX, (FLOAT)-physY};
+            SetGraphicsMode(dc, GM_ADVANCED);
+            SetWorldTransform(dc, &xf);
+            Render(dc, lay, texts, s0, 0, 0, o);
+            ModifyWorldTransform(dc, nullptr, MWT_IDENTITY);
+        }
         ok = EndPage(dc) > 0;
     }
     if (ok) ok = EndDoc(dc) > 0;
@@ -802,12 +867,12 @@ const COLORREF InputBorder = RGB(214, 208, 226), Tint = RGB(243, 237, 250), Tint
 const COLORREF StatusBg = RGB(234, 230, 242), Good = RGB(28, 140, 84), Bad = RGB(200, 50, 50);
 }
 
-HFONT g_fTitle, g_fSub, g_fCard, g_fLabel, g_fInput, g_fButton, g_fSmall, g_fBig;
+HFONT g_fTitle, g_fSub, g_fCard, g_fLabel, g_fInput, g_fButton, g_fSmall, g_fBig, g_fEn, g_fWaybill;
 HBRUSH g_bgBrush;
 HWND g_hover;
 
 HFONT MakeFont(double pt, bool bold) {
-    return CreateFontW(-MulDiv((int)lround(pt * 10), g_dpi, 720), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0,
+    return CreateFontW(-(int)lround(pt * g_dpi / 72.0 * g_fit), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                        L"Segoe UI");
 }
@@ -843,11 +908,13 @@ void PaintText(HDC dc, const wstring& t, RECT r, HFONT f, COLORREF c,
     HGDIOBJ old = SelectObject(dc, f);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, c);
-    DrawTextW(dc, t.c_str(), -1, &r, fmt | DT_NOPREFIX | DT_RTLREADING);
+    DrawTextW(dc, t.c_str(), -1, &r, fmt | DT_NOPREFIX | (HasArabic(t) ? DT_RTLREADING : 0));
     SelectObject(dc, old);
 }
 
-enum BtnKind { BTN_PRIMARY, BTN_SECONDARY, BTN_SMALL };
+enum BtnKind { BTN_PRIMARY, BTN_SECONDARY, BTN_SMALL, BTN_SEGMENT };
+
+bool SegmentSelected(int id);
 
 // Buttons repaint on hover; the parent draws them in WM_DRAWITEM.
 LRESULT CALLBACK ButtonHover(HWND h, UINT m, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
@@ -894,7 +961,7 @@ void DrawButton(const DRAWITEMSTRUCT* d) {
     {
         Gdiplus::Graphics g(mem);
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        float rad = (float)S(kind == BTN_SMALL ? 8 : 10);
+        float rad = (float)S(kind == BTN_SMALL || kind == BTN_SEGMENT ? 8 : 10);
         if (kind == BTN_PRIMARY) {
             COLORREF top = down ? Theme::PurpleDark : hover ? Theme::PurpleLight : Theme::Purple;
             COLORREF bottom = down ? Theme::PurpleDark : Theme::Purple;
@@ -913,8 +980,11 @@ void DrawButton(const DRAWITEMSTRUCT* d) {
             RECT br = {1, 1, w - 1, h - 1};
             StrokeRound(g, br, rad, hover ? Theme::Purple : Theme::InputBorder, hover ? 1.6f : 1.2f);
             textColor = Theme::Purple;
+        } else if (kind == BTN_SEGMENT && SegmentSelected(GetDlgCtrlID(d->hwndItem))) {
+            FillRound(g, r, rad, Theme::Purple);
+            textColor = RGB(255, 255, 255);
         } else {
-            FillRound(g, r, rad, down ? Theme::TintHover : hover ? Theme::TintHover : Theme::Tint);
+            FillRound(g, r, rad, down || hover ? Theme::TintHover : Theme::Tint);
             textColor = Theme::Purple;
         }
     }
@@ -995,7 +1065,8 @@ void ClearReceiver() {
         SetWindowTextW(g_edit[i], L"");
     SetWindowTextW(g_edit[F_DATE], Today().c_str());
     SetWindowTextW(g_edit[F_PIECES], L"1");
-    SetFocus(g_edit[F_RNAME]);
+    SetFocus(g_waybillNo);
+    SendMessageW(g_waybillNo, EM_SETSEL, 0, -1);
 }
 
 void DoPrint() {
@@ -1256,6 +1327,7 @@ bool EdSave() {
     SaveLayout(g_lay);
     ed.dirty = false;
     SetStatus(L"انحفظت مواقع الخانات.", 1);
+    RedrawWindow(g_main, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
     return true;
 }
 
@@ -1466,10 +1538,12 @@ void OpenEditor() {
 // layout runs right to left from fixed 96-dpi coordinates.
 // ---------------------------------------------------------------------------
 
-const int kMainW = 980, kMainH = 664;
-const int kCardY = 92, kCardH = 400, kCardW = 300, kCardGap = 16, kMargin = 24;
 
-struct Label { RECT rc; wstring text; HFONT* font; COLORREF color; };
+const int kMainW = 1100, kMainH = 690;
+const int kCardY = 76, kCardH = 454, kCardW = 340, kCardGap = 16, kMargin = 24;
+const int kBarY = kCardY + kCardH + 12, kActY = kBarY + 54 + 12;
+
+struct Label { RECT rc; wstring text; HFONT* font; COLORREF color; UINT fmt; };
 struct Input { HWND edit; RECT box; };
 
 vector<Label> g_labels;
@@ -1485,20 +1559,32 @@ RECT RR(int xr, int y, int w, int h) {
 
 int CardX(int i) { return kMargin + i * (kCardW + kCardGap); }
 
-void AddLabel(int xr, int y, int w, int h, const wstring& text, HFONT* font = &g_fLabel, COLORREF c = Theme::Muted) {
-    g_labels.push_back({RR(xr, y, w, h), text, font, c});
+void AddLabel(int xr, int y, int w, int h, const wstring& text, HFONT* font = &g_fLabel,
+              COLORREF c = Theme::Muted, UINT fmt = DT_RIGHT | DT_VCENTER | DT_SINGLELINE) {
+    g_labels.push_back({RR(xr, y, w, h), text, font, c, fmt});
 }
 
-HWND AddInput(HWND parent, int xr, int y, int w, int h, int id, bool multi, bool rtl, DWORD extra = 0) {
+int TextWidth(HFONT f, const wstring& t) {
+    HDC dc = GetDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, f);
+    RECT r = {0, 0, 0, 0};
+    DrawTextW(dc, t.c_str(), -1, &r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, old);
+    ReleaseDC(nullptr, dc);
+    return r.right - r.left;
+}
+
+HWND AddInput(HWND parent, int xr, int y, int w, int h, int id, bool multi, bool rtl, DWORD extra = 0,
+              HFONT font = g_fInput) {
     RECT box = RR(xr, y, w, h);
     DWORD st = WS_CHILD | WS_VISIBLE | WS_TABSTOP | extra |
                (multi ? (ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) : ES_AUTOHSCROLL);
     HWND e = CreateWindowExW(rtl ? WS_EX_LAYOUTRTL : 0, L"EDIT", L"", st, 0, 0, 10, 10, parent,
                              (HMENU)(INT_PTR)id, g_inst, nullptr);
-    SendMessageW(e, WM_SETFONT, (WPARAM)g_fInput, TRUE);
+    SendMessageW(e, WM_SETFONT, (WPARAM)font, TRUE);
     // Borderless edit centred inside a painted rounded box.
     HDC dc = GetDC(e);
-    HGDIOBJ old = SelectObject(dc, g_fInput);
+    HGDIOBJ old = SelectObject(dc, font);
     TEXTMETRICW tm;
     GetTextMetricsW(dc, &tm);
     SelectObject(dc, old);
@@ -1506,7 +1592,7 @@ HWND AddInput(HWND parent, int xr, int y, int w, int h, int id, bool multi, bool
     int padX = S(10), lineH = tm.tmHeight + S(2);
     RECT er = box;
     if (multi) {
-        InflateRect(&er, -padX, -S(7));
+        InflateRect(&er, -padX, -S(8));
     } else {
         er.left += padX;
         er.right -= padX;
@@ -1518,69 +1604,84 @@ HWND AddInput(HWND parent, int xr, int y, int w, int h, int id, bool multi, bool
     return e;
 }
 
-// A labelled input inside a card: label (20) + box (32) = one 62-unit row.
-HWND AddField(HWND parent, int xr, int y, int w, int field, int boxH = 32, bool rtl = true) {
-    AddLabel(xr, y, w, 20, kFields[field].label);
-    g_edit[field] = AddInput(parent, xr, y + 20, w, boxH, IDC_EDIT_BASE + field, kFields[field].multi, rtl);
+// A field as named on the form: Arabic on the right, English on the left,
+// and the input box under them. One row is 22 + boxH.
+HWND AddField(HWND parent, int xr, int y, int w, int field, int boxH = 38, bool rtl = true) {
+    const FieldDef& f = kFields[field];
+    AddLabel(xr, y, w, 22, f.label, &g_fLabel, Theme::Text);
+    int arW = (int)lround(TextWidth(g_fLabel, f.label) * 96.0 / g_dpi / g_fit) + 12;
+    if (arW < w - 30)
+        AddLabel(xr + arW, y, w - arW, 22, f.en, &g_fEn, Theme::Muted,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    g_edit[field] = AddInput(parent, xr, y + 22, w, boxH, IDC_EDIT_BASE + field, f.multi, rtl);
     return g_edit[field];
 }
 
 void PlaceButton(HWND b, RECT r) { MoveWindow(b, r.left, r.top, r.right - r.left, r.bottom - r.top, FALSE); }
 
+bool SegmentSelected(int id) {
+    return (id == IDC_ROT_LONG && g_lay.rotate == 90) || (id == IDC_ROT_FLIP && g_lay.rotate == 270) ||
+           (id == IDC_ROT_WIDE && g_lay.rotate == 0);
+}
+
 void BuildMain(HWND h) {
-    const int in = 16, fw = kCardW - 2 * in, y0 = kCardY + 62;
+    const int in = 16, fw = kCardW - 2 * in, y0 = kCardY + 62, row = 70, bottom = kCardY + kCardH;
+
+    // Waybill number from the barcode, in the header (a scanner can type it in).
+    g_waybillNo = AddInput(h, kMainW - kMargin - 210, 11, 210, 38, IDC_WAYBILL, false, false, ES_CENTER, g_fWaybill);
 
     // 1. Sender
     int x = CardX(0) + in;
     AddField(h, x, y0, fw, F_SNAME);
-    AddField(h, x, y0 + 62, fw, F_SPHONE, 32, false);
-    AddField(h, x, y0 + 124, fw, F_SADDR, kCardY + kCardH - 46 - (y0 + 144));
-    AddLabel(x + 26, kCardY + kCardH - 38, fw - 26, 24, L"بيانات المرسل بتنحفظ تلقائياً", &g_fSmall);
+    AddField(h, x, y0 + row, fw, F_SPHONE, 38, false);
+    AddField(h, x, y0 + 2 * row, fw, F_SADDR, bottom - 40 - (y0 + 2 * row + 22));
+    AddLabel(x + 26, bottom - 37, fw - 26, 24, L"بيانات المرسل بتنحفظ تلقائياً", &g_fSmall);
 
     // 3. Receiver
     x = CardX(1) + in;
     AddField(h, x, y0, fw, F_RNAME);
-    AddField(h, x, y0 + 62, fw, F_RPHONE, 32, false);
-    AddField(h, x, y0 + 124, fw, F_RCITY);
-    AddField(h, x, y0 + 186, fw, F_RSTREET, kCardY + kCardH - in - (y0 + 206));
+    AddField(h, x, y0 + row, fw, F_RPHONE, 38, false);
+    AddField(h, x, y0 + 2 * row, fw, F_RCITY);
+    AddField(h, x, y0 + 3 * row, fw, F_RSTREET, bottom - in - (y0 + 3 * row + 22));
 
     // 5. Shipment
     x = CardX(2) + in;
-    AddLabel(x, y0, fw, 20, L"رقم البوليصة (للسجل فقط)");
-    g_waybillNo = AddInput(h, x, y0 + 20, fw, 32, IDC_WAYBILL, false, false);
     int half = (fw - 12) / 2;
-    AddField(h, x, y0 + 62, half, F_DATE, 32, false);
-    AddField(h, x + half + 12, y0 + 62, half, F_PIECES, 32, false);
-    AddField(h, x, y0 + 124, fw, F_VALUE, 32, false);
-    AddField(h, x, y0 + 186, fw, F_REF, 32, false);
-    AddField(h, x, y0 + 248, fw, F_NOTES, kCardY + kCardH - in - (y0 + 268));
+    AddField(h, x, y0, half, F_PIECES, 38, false);
+    AddField(h, x + half + 12, y0, half, F_DATE, 38, false);
+    AddField(h, x, y0 + row, fw, F_REF, 38, false);
+    AddField(h, x, y0 + 2 * row, fw, F_VALUE, 38, false);
+    AddField(h, x, y0 + 3 * row, fw, F_NOTES, bottom - in - (y0 + 3 * row + 22));
 
     // Print settings bar
-    const int sy = kCardY + kCardH + 14 + 13;
-    AddLabel(kMargin + 16, sy, 62, 32, L"حجم الخط", &g_fLabel, Theme::Text);
-    PlaceButton(MakeButton(h, L"+", IDC_FONT_INC, BTN_SMALL, Theme::Card), RR(kMargin + 82, sy, 32, 32));
-    g_fontSize = AddInput(h, kMargin + 118, sy, 50, 32, IDC_FONTSIZE, false, false, ES_NUMBER | ES_CENTER);
-    PlaceButton(MakeButton(h, L"−", IDC_FONT_DEC, BTN_SMALL, Theme::Card), RR(kMargin + 172, sy, 32, 32));
+    const int sy = kBarY + 11, bx = kMargin + 16;
+    AddLabel(bx, sy, 72, 32, L"حجم الخط", &g_fLabel, Theme::Text);
+    PlaceButton(MakeButton(h, L"+", IDC_FONT_INC, BTN_SMALL, Theme::Card), RR(bx + 76, sy, 32, 32));
+    g_fontSize = AddInput(h, bx + 112, sy, 48, 32, IDC_FONTSIZE, false, false, ES_NUMBER | ES_CENTER);
+    PlaceButton(MakeButton(h, L"−", IDC_FONT_DEC, BTN_SMALL, Theme::Card), RR(bx + 164, sy, 32, 32));
 
-    AddLabel(kMargin + 226, sy, 70, 32, L"عدد النسخ", &g_fLabel, Theme::Text);
-    PlaceButton(MakeButton(h, L"+", IDC_COPY_INC, BTN_SMALL, Theme::Card), RR(kMargin + 300, sy, 32, 32));
-    g_copies = AddInput(h, kMargin + 336, sy, 50, 32, IDC_COPIES, false, false, ES_NUMBER | ES_CENTER);
-    PlaceButton(MakeButton(h, L"−", IDC_COPY_DEC, BTN_SMALL, Theme::Card), RR(kMargin + 390, sy, 32, 32));
-    AddLabel(kMargin + 430, sy, 170, 32, L"كل نسخة على ورقة جديدة", &g_fSmall);
+    AddLabel(bx + 220, sy, 76, 32, L"عدد النسخ", &g_fLabel, Theme::Text);
+    PlaceButton(MakeButton(h, L"+", IDC_COPY_INC, BTN_SMALL, Theme::Card), RR(bx + 300, sy, 32, 32));
+    g_copies = AddInput(h, bx + 336, sy, 48, 32, IDC_COPIES, false, false, ES_NUMBER | ES_CENTER);
+    PlaceButton(MakeButton(h, L"−", IDC_COPY_DEC, BTN_SMALL, Theme::Card), RR(bx + 388, sy, 32, 32));
+
+    AddLabel(bx + 444, sy, 100, 32, L"الورقة بتدخل:", &g_fLabel, Theme::Text);
+    PlaceButton(MakeButton(h, L"بالطول", IDC_ROT_LONG, BTN_SEGMENT, Theme::Card), RR(bx + 548, sy, 78, 32));
+    PlaceButton(MakeButton(h, L"بالطول مقلوب", IDC_ROT_FLIP, BTN_SEGMENT, Theme::Card), RR(bx + 630, sy, 112, 32));
+    PlaceButton(MakeButton(h, L"بالعرض", IDC_ROT_WIDE, BTN_SEGMENT, Theme::Card), RR(bx + 746, sy, 78, 32));
 
     PlaceButton(MakeButton(h, L"تغيير الطابعة", IDC_PRINTER, BTN_SECONDARY, Theme::Card),
-                RR(kMainW - kMargin - 16 - 130, sy, 130, 32));
+                RR(kMainW - bx - 130, sy, 130, 32));
 
     // Actions
-    const int ay = kCardY + kCardH + 14 + 58 + 14;
-    PlaceButton(MakeButton(h, L"طباعة البوليصة", IDC_PRINT, BTN_PRIMARY, Theme::Bg), RR(kMargin, ay, 220, 46));
+    PlaceButton(MakeButton(h, L"طباعة البوليصة", IDC_PRINT, BTN_PRIMARY, Theme::Bg), RR(kMargin, kActY, 240, 46));
     struct Btn { const wchar_t* text; int id; } btns[] = {
-        {L"ضبط المواقع", IDC_EDITOR}, {L"طباعة تجربة", IDC_TEST},
+        {L"ضبط المواقع بالماوس", IDC_EDITOR}, {L"طباعة تجربة", IDC_TEST},
         {L"بوليصة جديدة", IDC_CLEAR}, {L"سجل الإكسل", IDC_EXCEL},
     };
     for (int i = 0; i < 4; ++i)
         PlaceButton(MakeButton(h, btns[i].text, btns[i].id, BTN_SECONDARY, Theme::Bg),
-                    RR(kMargin + 232 + i * 176, ay, 164, 46));
+                    RR(kMargin + 252 + i * 200, kActY, 188, 46));
 
     // Initial values
     SetWindowTextW(g_edit[F_SNAME], IniDecode(IniGet(L"sender", L"name")).c_str());
@@ -1592,14 +1693,7 @@ void BuildMain(HWND h) {
     SetWindowTextW(g_copies, copies.empty() ? L"1" : copies.c_str());
     SetWindowTextW(g_edit[F_DATE], Today().c_str());
     SetWindowTextW(g_edit[F_PIECES], L"1");
-    SetStatus(L"عبّي الخانات واضغط \"طباعة البوليصة\". أول مرة اضغط \"ضبط المواقع\" عشان تظبط مكان الكتابة.");
-}
-
-wstring TodayLong() {
-    static const wchar_t* days[] = {L"الأحد", L"الإثنين", L"الثلاثاء", L"الأربعاء", L"الخميس", L"الجمعة", L"السبت"};
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    return wstring(days[t.wDayOfWeek]) + L"  " + Today();
+    SetStatus(L"اكتب رقم البوليصة، عبّي البيانات، واضغط \"طباعة البوليصة\".");
 }
 
 void PaintMain(HWND h) {
@@ -1612,9 +1706,8 @@ void PaintMain(HWND h) {
     HGDIOBJ ob = SelectObject(mem, bmp);
     FillRect(mem, &cr, g_bgBrush);
 
-    const int sy = kCardY + kCardH + 14;
-    RECT settings = RR(kMargin, sy, kMainW - 2 * kMargin, 58);
-    RECT status = {0, cr.bottom - S(30), cr.right, cr.bottom};
+    RECT bar = RR(kMargin, kBarY, kMainW - 2 * kMargin, 54);
+    RECT status = {0, cr.bottom - S(28), cr.right, cr.bottom};
     {
         Gdiplus::Graphics g(mem);
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -1622,12 +1715,10 @@ void PaintMain(HWND h) {
         // Header with a gradient and an orange underline.
         Gdiplus::LinearGradientBrush hb(Gdiplus::Point(0, 0), Gdiplus::Point(cr.right, 0), GC(Theme::PurpleLight),
                                         GC(Theme::PurpleDark));
-        g.FillRectangle(&hb, 0, 0, (INT)cr.right, (INT)S(72));
-        Gdiplus::SolidBrush ob2(GC(Theme::Orange));
-        g.FillRectangle(&ob2, 0, (INT)S(72), (INT)cr.right, (INT)S(4));
-        FillRound(g, RR(kMainW - kMargin - 190, 22, 190, 30), (float)S(15), RGB(255, 255, 255), 38);
+        g.FillRectangle(&hb, 0, 0, (INT)cr.right, (INT)S(60));
+        Gdiplus::SolidBrush orange(GC(Theme::Orange));
+        g.FillRectangle(&orange, 0, (INT)S(60), (INT)cr.right, (INT)S(4));
 
-        // Cards with a soft shadow.
         auto card = [&](RECT r) {
             RECT sh = r;
             OffsetRect(&sh, 0, S(3));
@@ -1635,76 +1726,73 @@ void PaintMain(HWND h) {
             FillRound(g, r, (float)S(14), Theme::Card);
             StrokeRound(g, r, (float)S(14), Theme::CardBorder, 1);
         };
+        Gdiplus::SolidBrush purple(GC(Theme::Purple)), line(GC(Theme::CardBorder));
         for (int i = 0; i < 3; ++i) {
             int x = CardX(i);
             card(RR(x, kCardY, kCardW, kCardH));
-            Gdiplus::SolidBrush badge(GC(Theme::Purple));
             RECT b = RR(x + 16, kCardY + 14, 28, 28);
-            g.FillEllipse(&badge, (INT)b.left, (INT)b.top, (INT)(b.right - b.left), (INT)(b.bottom - b.top));
-            RECT line = RR(x + 16, kCardY + 52, kCardW - 32, 1);
-            Gdiplus::SolidBrush lb(GC(Theme::CardBorder));
-            g.FillRectangle(&lb, (INT)line.left, (INT)line.top, (INT)(line.right - line.left), 1);
+            g.FillEllipse(&purple, (INT)b.left, (INT)b.top, (INT)(b.right - b.left), (INT)(b.bottom - b.top));
+            RECT l = RR(x + 16, kCardY + 52, kCardW - 32, 1);
+            g.FillRectangle(&line, (INT)l.left, (INT)l.top, (INT)(l.right - l.left), 1);
         }
-        // Small "i" bubble beside the sender note.
         RECT tip = RR(CardX(0) + 16, kCardY + kCardH - 34, 18, 18);
-        Gdiplus::SolidBrush tb(GC(Theme::Orange));
-        g.FillEllipse(&tb, (INT)tip.left, (INT)tip.top, (INT)(tip.right - tip.left), (INT)(tip.bottom - tip.top));
-        card(settings);
+        g.FillEllipse(&orange, (INT)tip.left, (INT)tip.top, (INT)(tip.right - tip.left), (INT)(tip.bottom - tip.top));
+        card(bar);
 
-        // Input boxes; the focused one gets a purple ring.
+        // Input boxes; the focused one gets a ring (orange on the purple header).
         for (const Input& in : g_inputs) {
-            bool focus = in.edit == g_focus;
+            bool focus = in.edit == g_focus, onHeader = in.edit == g_waybillNo;
             if (focus) {
                 RECT ring = in.box;
                 InflateRect(&ring, S(3), S(3));
-                FillRound(g, ring, (float)S(11), Theme::Purple, 40);
+                FillRound(g, ring, (float)S(11), onHeader ? Theme::Orange : Theme::Purple, onHeader ? 200 : 40);
             }
             FillRound(g, in.box, (float)S(8), RGB(255, 255, 255));
-            StrokeRound(g, in.box, (float)S(8), focus ? Theme::Purple : Theme::InputBorder, focus ? 1.8f : 1.2f);
+            if (!onHeader)
+                StrokeRound(g, in.box, (float)S(8), focus ? Theme::Purple : Theme::InputBorder, focus ? 1.8f : 1.2f);
         }
 
         Gdiplus::SolidBrush sb(GC(Theme::StatusBg));
         g.FillRectangle(&sb, 0, (INT)status.top, (INT)cr.right, (INT)(status.bottom - status.top));
         COLORREF dotColor = g_statusKind == 1 ? Theme::Good : g_statusKind == 2 ? Theme::Bad : Theme::Purple;
         Gdiplus::SolidBrush db(GC(dotColor));
-        RECT dot = {cr.right - S(kMargin) - S(10), status.top + S(10), cr.right - S(kMargin), status.top + S(20)};
-        g.FillEllipse(&db, (INT)dot.left, (INT)dot.top, (INT)S(10), (INT)S(10));
+        g.FillEllipse(&db, (INT)(cr.right - S(kMargin) - S(10)), (INT)(status.top + S(9)), (INT)S(10), (INT)S(10));
     }
 
-    // Header text
+    // Header
     if (g_icon) {
-        RECT ir = RR(kMargin, 16, 40, 40);
-        DrawIconEx(mem, ir.left, ir.top, g_icon, S(40), S(40), 0, nullptr, DI_NORMAL);
+        RECT ir = RR(kMargin, 12, 36, 36);
+        DrawIconEx(mem, ir.left, ir.top, g_icon, S(36), S(36), 0, nullptr, DI_NORMAL);
     }
-    PaintText(mem, L"طباعة بوليصة الشحن", RR(kMargin + 52, 8, 500, 36), g_fTitle, RGB(255, 255, 255));
-    PaintText(mem, L"عبّي البيانات، والبرنامج بيطبعها بمكانها على ورقة البوليصة", RR(kMargin + 52, 42, 500, 22),
+    PaintText(mem, L"طباعة بوليصة الشحن", RR(kMargin + 48, 5, 420, 32), g_fTitle, RGB(255, 255, 255));
+    PaintText(mem, L"Domestic Waybill  •  عبّي البيانات وبتنطبع بمكانها على البوليصة", RR(kMargin + 48, 35, 560, 20),
               g_fSub, Theme::HeaderSub);
-    PaintText(mem, TodayLong(), RR(kMainW - kMargin - 190, 22, 190, 30), g_fLabel, RGB(255, 255, 255),
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    PaintText(mem, L"رقم البوليصة:", RR(kMainW - kMargin - 210 - 140, 11, 130, 38), g_fCard, RGB(255, 255, 255),
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    // Card titles and badges
-    const wchar_t* titles[3] = {L"بيانات المرسل", L"بيانات المستلم", L"معلومات الشحنة"};
+    // Card titles: number, Arabic, English, as on the form.
+    const wchar_t* titles[3] = {L"معلومات المرسل", L"معلومات المستلم", L"معلومات الشحنة"};
+    const wchar_t* english[3] = {L"FROM (SHIPPER)", L"TO (RECEIVER)", L"SHIPMENT INFORMATION"};
     const wchar_t* numbers[3] = {L"1", L"3", L"5"};
     for (int i = 0; i < 3; ++i) {
         int x = CardX(i);
         PaintText(mem, numbers[i], RR(x + 16, kCardY + 14, 28, 28), g_fButton, RGB(255, 255, 255),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        PaintText(mem, titles[i], RR(x + 54, kCardY + 12, kCardW - 70, 32), g_fCard, Theme::Text);
+        PaintText(mem, titles[i], RR(x + 52, kCardY + 12, 134, 32), g_fCard, Theme::Text);
+        PaintText(mem, english[i], RR(x + 190, kCardY + 12, kCardW - 206, 32), g_fEn, Theme::Purple,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     PaintText(mem, L"i", RR(CardX(0) + 16, kCardY + kCardH - 34, 18, 18), g_fSmall, RGB(255, 255, 255),
               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    for (const Label& l : g_labels) PaintText(mem, l.text, l.rc, *l.font, l.color);
+    for (const Label& l : g_labels) PaintText(mem, l.text, l.rc, *l.font, l.color, l.fmt);
 
-    // Printer name, on the left of the settings bar beside its button.
+    // Status on the right, printer on the left.
     wstring printer = CurrentPrinter();
-    RECT pr = RR(kMainW - kMargin - 16 - 130 - 230, kCardY + kCardH + 14 + 13, 220, 32);
-    PaintText(mem, L"الطابعة: " + (printer.empty() ? wstring(L"غير محددة") : printer), pr, g_fLabel, Theme::Text,
+    RECT pr = {S(kMargin), status.top, S(kMargin) + S(330), status.bottom};
+    PaintText(mem, L"الطابعة: " + (printer.empty() ? wstring(L"غير محددة") : printer), pr, g_fSmall, Theme::Muted,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-    RECT st = status;
-    st.right -= S(kMargin + 18);
-    st.left += S(kMargin);
+    RECT st = {pr.right + S(12), status.top, cr.right - S(kMargin + 18), status.bottom};
     PaintText(mem, g_statusText, st, g_fLabel,
               g_statusKind == 2 ? Theme::Bad : g_statusKind == 1 ? Theme::Good : Theme::Text,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1722,6 +1810,14 @@ void Step(HWND edit, int delta, int lo, int hi) {
     SetWindowTextW(edit, std::to_wstring(v).c_str());
 }
 
+void SetRotation(HWND h, int rotate) {
+    g_lay.rotate = rotate;
+    IniSet(L"layout", L"rotate", Num(rotate, 0));
+    RedrawWindow(h, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    SetStatus(rotate == 0 ? L"الورقة بتدخل بالعرض." :
+              L"الورقة بتدخل بالطول، والكلام بينطبع مدوّر. إذا طلع مقلوب اختار الخيار الثاني.");
+}
+
 LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_CREATE:
@@ -1729,7 +1825,7 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         BuildMain(h);
         return 0;
     case WM_SETFOCUS:
-        SetFocus(g_edit[F_RNAME]);
+        SetFocus(g_waybillNo);
         return 0;
     case WM_ERASEBKGND:
         return 1;
@@ -1740,7 +1836,7 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         DrawButton((const DRAWITEMSTRUCT*)lp);
         return TRUE;
     case WM_CTLCOLOREDIT:
-        SetTextColor((HDC)wp, Theme::Text);
+        SetTextColor((HDC)wp, (HWND)lp == g_waybillNo ? Theme::Purple : Theme::Text);
         SetBkColor((HDC)wp, RGB(255, 255, 255));
         return (LRESULT)GetStockObject(WHITE_BRUSH);
     case WM_LBUTTONDOWN: {  // a click on a box's padding focuses its input
@@ -1751,6 +1847,12 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND: {
         int id = LOWORD(wp), code = HIWORD(wp);
+        if (id == IDOK) {  // Enter in a one-line box moves on, like a barcode scanner expects
+            HWND f = GetFocus();
+            if (f == g_waybillNo) SetFocus(g_edit[F_RNAME]);
+            else if (f && IsChild(h, f)) SetFocus(GetNextDlgTabItem(h, f, FALSE));
+            return 0;
+        }
         if (code == EN_SETFOCUS || code == EN_KILLFOCUS) {
             g_focus = code == EN_SETFOCUS ? (HWND)lp : nullptr;
             InvalidateRect(h, nullptr, FALSE);
@@ -1769,9 +1871,12 @@ LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             case IDC_PRINT: DoPrint(); return 0;
             case IDC_EDITOR: OpenEditor(); return 0;
             case IDC_TEST: SaveState(); DoTestPage(g_lay, h); return 0;
-            case IDC_CLEAR: ClearReceiver(); SetStatus(L"جاهز لبوليصة جديدة."); return 0;
+            case IDC_CLEAR: ClearReceiver(); SetStatus(L"جاهز لبوليصة جديدة. اكتب رقم البوليصة الجديدة فوق."); return 0;
             case IDC_PRINTER: ChoosePrinter(); return 0;
             case IDC_EXCEL: OpenExcel(); return 0;
+            case IDC_ROT_LONG: SetRotation(h, 90); return 0;
+            case IDC_ROT_FLIP: SetRotation(h, 270); return 0;
+            case IDC_ROT_WIDE: SetRotation(h, 0); return 0;
         }
         break;
     }
@@ -1808,18 +1913,30 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     HDC screen = GetDC(nullptr);
     g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(nullptr, screen);
-    g_fTitle = MakeFont(17, true);
-    g_fSub = MakeFont(10, false);
+
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    RECT work;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    RECT frame = {0, 0, 0, 0};
+    AdjustWindowRectEx(&frame, style, FALSE, WS_EX_CONTROLPARENT);
+    double needW = kMainW * g_dpi / 96.0 + (frame.right - frame.left);
+    double needH = kMainH * g_dpi / 96.0 + (frame.bottom - frame.top);
+    g_fit = std::min({1.0, (work.right - work.left) / needW, (work.bottom - work.top) / needH});
+
+    g_fTitle = MakeFont(16, true);
+    g_fSub = MakeFont(9.5, false);
     g_fCard = MakeFont(12, true);
-    g_fLabel = MakeFont(9.5, false);
-    g_fInput = MakeFont(11, false);
+    g_fLabel = MakeFont(10, true);
+    g_fEn = MakeFont(8, false);
+    g_fInput = MakeFont(12, false);
     g_fButton = MakeFont(10.5, true);
     g_fSmall = MakeFont(9, false);
     g_fBig = MakeFont(14, true);
+    g_fWaybill = MakeFont(15, true);
     g_uiFont = g_fLabel;
     g_bgBrush = CreateSolidBrush(Theme::Bg);
     g_formBmp = (HBITMAP)LoadImageW(inst, L"FORMBMP", IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-    g_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, S(40), S(40), 0);
+    g_icon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, S(36), S(36), 0);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = MainProc;
@@ -1832,11 +1949,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpszClassName = L"WaybillEditor";
     RegisterClassW(&wc);
 
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     RECT r = {0, 0, S(kMainW), S(kMainH)};
     AdjustWindowRectEx(&r, style, FALSE, WS_EX_CONTROLPARENT);
-    RECT work;
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     int w = r.right - r.left, hgt = r.bottom - r.top;
     HWND h = CreateWindowExW(WS_EX_CONTROLPARENT, L"WaybillMain", L"طباعة بوليصة الشحن", style,
                              work.left + std::max(0, (int)(work.right - work.left - w) / 2),
