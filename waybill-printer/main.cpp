@@ -286,8 +286,35 @@ struct RenderOpts {
     bool boxes = false;         // outline every field
     bool placeholders = false;  // show the field name when it is empty
     bool screen = false;
+    bool background = false;    // faint photo of the form, for test pages on plain paper
     int selected = -1;
 };
+
+// The form photo lightened to a faint grey, so text printed over it stays readable.
+const vector<uint32_t>& FadedForm(int& w, int& h) {
+    static vector<uint32_t> px;
+    static int fw = 0, fh = 0;
+    if (px.empty() && g_formBmp) {
+        BITMAP bm;
+        GetObject(g_formBmp, sizeof(bm), &bm);
+        fw = bm.bmWidth;
+        fh = bm.bmHeight;
+        BITMAPINFO bi = {};
+        bi.bmiHeader = {sizeof(BITMAPINFOHEADER), fw, -fh, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+        px.resize((size_t)fw * fh);
+        HDC dc = GetDC(nullptr);
+        GetDIBits(dc, g_formBmp, 0, fh, px.data(), &bi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, dc);
+        for (uint32_t& c : px) {
+            uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+            auto fade = [](uint32_t v) { return 255 - (255 - v) * 30 / 100; };
+            c = (fade(r) << 16) | (fade(g) << 8) | fade(b);
+        }
+    }
+    w = fw;
+    h = fh;
+    return px;
+}
 
 RECT FieldRect(const Layout& lay, int i, double s, double ox, double oy) {
     const Box& b = lay.box[i];
@@ -347,6 +374,18 @@ void DrawFitted(HDC dc, const wstring& text, RECT rc, const FieldDef& f, const L
 
 void Render(HDC dc, const Layout& lay, const wstring* texts, double s, double ox, double oy,
             const RenderOpts& o) {
+    if (o.background) {
+        int w, h;
+        const vector<uint32_t>& px = FadedForm(w, h);
+        if (!px.empty()) {
+            BITMAPINFO bi = {};
+            bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, nullptr);
+            StretchDIBits(dc, (int)lround(ox), (int)lround(oy), (int)lround(lay.paperW * s),
+                          (int)lround(lay.paperH * s), 0, 0, w, h, px.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        }
+    }
     for (int i = 0; i < NF; ++i) {
         RECT rc = FieldRect(lay, i, s, ox, oy);
         if (o.boxes) {
@@ -472,6 +511,7 @@ bool PrintPages(const Layout& lay, const wstring* texts, int copies, bool testPa
     RenderOpts o;
     o.boxes = testPage;
     o.placeholders = testPage;
+    o.background = testPage;
     vector<uint32_t> turned;
     int tw = 0, th = 0;
     if (lay.rotate != 0) {
@@ -1124,7 +1164,7 @@ void DoTestPage(const Layout& lay, HWND owner) {
     ReadTexts(texts);
     wstring err;
     if (PrintPages(lay, texts, 1, true, err))
-        SetStatus(L"انطبعت صفحة التجربة: قارن المربعات المطبوعة مع مربعات البوليصة.", 1);
+        SetStatus(L"انطبعت صفحة التجربة: البوليصة الباهتة للمقارنة بس. الطباعة الحقيقية بتطبع الكلام بس.", 1);
     else
         Msg(owner, err, MB_ICONERROR);
 }
